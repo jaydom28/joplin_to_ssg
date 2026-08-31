@@ -1,0 +1,3 @@
+requests==2.34.2
+PyYAML==5.1
+frontmatter==3.0.8

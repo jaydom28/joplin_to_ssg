@@ -5,6 +5,7 @@ import sys
 import unicodedata
 import yaml
 
+import frontmatter
 import requests
 
 from typing import NewType, Optional, TypedDict
@@ -14,7 +15,7 @@ from DataTypes import ConfigData
 
 
 logger = logging.getLogger(__name__)
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.ERROR)
 
 
 def parse_arguments():
@@ -116,18 +117,21 @@ def main() -> int:
         return 42
 
     notes = joplin.folders.find_all_notes(folder["id"])
+    resolved_notes = [joplin.resolve_path(p) for p in notes]
+    backlink_map = joplin.get_note_references(folder["id"])
+    post = joplin.notes.generate_frontmatter("1f5fe0079acd41aa9711d6e2984a634a")
 
     print(f"Found {len(notes)} notes in: {config_data['joplin_src']}")
     for path in notes:
-        note_body = joplin.notes.get_note_body(path)
+        frontmatter_note = joplin.generate_frontmatter(hugo, path, backlink_map)
         resolved_path = normalize(joplin.resolve_path(path))
 
-        if hugo.read(resolved_path) == note_body:
+        if hugo.read(resolved_path) == frontmatter.dumps(frontmatter_note):
             logger.info(f"{resolved_path} is already synced to {normalize(joplin.resolve_path(path))}")
             continue
 
-        print(f"Syncing: Joplin:{joplin.resolve_path(path)} --> local:{hugo.get_full_path(resolved_path)}")
-        hugo.write(resolved_path, note_body)
+        print(f"Syncing: Joplin:{joplin.resolve_path(path)} --> local:{hugo.get_full_note_path(resolved_path)}")
+        hugo.write(resolved_path, frontmatter.dumps(frontmatter_note))
 
     return 0
 

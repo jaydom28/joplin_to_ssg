@@ -10,3 +10,4 @@ class ConfigData(TypedDict):
     joplin_token: str
     joplin_src: str
     joplin_dst: str
+    verbosity: str

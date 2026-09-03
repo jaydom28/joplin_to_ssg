@@ -8,14 +8,21 @@ import yaml
 import frontmatter
 import requests
 
-from typing import NewType, Optional, TypedDict
+from typing import NewType, Optional, TypedDict, cast
 
 from Helpers import JoplinWebClipper, HugoGenerator, normalize
 from DataTypes import ConfigData
 
 
 logger = logging.getLogger(__name__)
-logging.basicConfig(level=logging.ERROR)
+
+_DEBUG = {
+    "debug": logging.DEBUG,
+    "info": logging.INFO,
+    "warning": logging.WARNING,
+    "error": logging.ERROR,
+    "critical": logging.CRITICAL
+}
 
 
 def parse_arguments():
@@ -44,10 +51,14 @@ def parse_arguments():
     parser.add_argument("-o", "--joplin-dst", type=str, default="",
                         help="The root local folder to create SSG files in.")
 
+    # Debug level
+    parser.add_argument("-v", "--verbosity", type=str, default="error",
+                        help="Logging level to use")
+
     return parser.parse_args()
 
 
-def read_config_file(file: str) -> ConfigData:
+def read_config_file(file: str) -> dict:
     """
     Create a namespace from the config file, and overwrite any needed variables.
     """
@@ -67,8 +78,8 @@ def read_config_file(file: str) -> ConfigData:
     return file_data
 
 
-def verify_params(data) -> bool:
-    required_keys = {"file", "joplin_port", "joplin_src", "joplin_dst", "joplin_token"}
+def verify_params(data: dict) -> bool:
+    required_keys = {"file", "joplin_port", "joplin_src", "joplin_dst", "joplin_token", "verbosity"}
 
     if not data.get("joplin_token"):
         logger.error("No token provided")
@@ -90,20 +101,27 @@ def load_config() -> Optional[ConfigData]:
         "joplin_port": data.get("joplin_port") or args.joplin_port,
         "joplin_token": data.get("joplin_token") or args.joplin_token,
         "joplin_src": data.get("joplin_src") or args.joplin_src,
-        "joplin_dst": data.get("joplin_dst") or args.joplin_dst
+        "joplin_dst": data.get("joplin_dst") or args.joplin_dst,
+        "verbosity": data.get("verbosity") or args.verbosity,
     }
 
-    return data if verify_params(data) else None
+    return cast(ConfigData, data) if verify_params(data) else None
 
 
-# TODO: Figure out how to link to pictures in hugo
 # TODO: Investigate how to create a standard python CLI tool
 
 
 def main() -> int:
+    print("Loading config...")
     if (config_data := load_config()) is None:
         print("Missing required parameters")
         return 42
+    if config_data.get("file"):
+        print(f"Loaded config from: {config_data['file']}")
+
+    print("Setting up logger")
+    logging.basicConfig(level=_DEBUG[config_data["verbosity"].lower()])
+
     joplin = JoplinWebClipper.from_config_data(config_data)
     hugo = HugoGenerator.from_config_data(config_data)
 
@@ -117,21 +135,19 @@ def main() -> int:
         return 42
 
     notes = joplin.folders.find_all_notes(folder["id"])
-    resolved_notes = [joplin.resolve_path(p) for p in notes]
     backlink_map = joplin.get_note_references(folder["id"])
     post = joplin.notes.generate_frontmatter("1f5fe0079acd41aa9711d6e2984a634a")
 
-    print(f"Found {len(notes)} notes in: {config_data['joplin_src']}")
     for path in notes:
-        frontmatter_note = joplin.generate_frontmatter(hugo, path, backlink_map)
+        note_body = joplin.generate_note_body(hugo, path, backlink_map)
         resolved_path = normalize(joplin.resolve_path(path))
 
-        if hugo.read(resolved_path) == frontmatter.dumps(frontmatter_note):
+        if hugo.read(resolved_path) == note_body:
             logger.info(f"{resolved_path} is already synced to {normalize(joplin.resolve_path(path))}")
             continue
 
         print(f"Syncing: Joplin:{joplin.resolve_path(path)} --> local:{hugo.get_full_note_path(resolved_path)}")
-        hugo.write(resolved_path, frontmatter.dumps(frontmatter_note))
+        hugo.write(resolved_path, note_body)
 
     return 0
 

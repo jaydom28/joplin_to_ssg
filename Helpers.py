@@ -6,15 +6,17 @@ import frontmatter
 import requests
 
 from collections import defaultdict
+from collections.abc import Iterator
 from datetime import datetime
+from itertools import count
 from typing import Optional, NewType, TypedDict
 
 from DataTypes import ConfigData
 
 
-FolderID = NewType("FolderID", str)
-NoteID = NewType("NoteID", str)
-ResourceID = NewType("ResourceID", str)
+FolderID = str
+NoteID = str
+ResourceID = str
 logger = logging.getLogger(__name__)
 
 
@@ -42,6 +44,16 @@ class JoplinWebClipper:
     def from_config_data(cls, data: ConfigData):
         return cls(port=data["joplin_port"], token=data["joplin_token"])
 
+    @staticmethod
+    def get(url: str) -> Iterator[dict]:
+        has_more = True
+        page = count(start=0)
+
+        while has_more:
+            data = requests.get(f"{url}&page={next(page)}").json()
+            has_more = data["has_more"]
+            yield from data["items"]
+
     def ping(self) -> bool:
         url = f"{self.base_url}/ping"
 
@@ -57,36 +69,36 @@ class JoplinWebClipper:
 
         return True
 
-    def resolve_path(self, path: str) -> str:
+    def resolve_path(self, path: NoteID | FolderID) -> str:
         *folders, note = path.split("/")
         resolved_folders = [self.folders.get_folder(f, fields="title")["title"] for f in folders]
         resolved_note = self.notes.get_note(note, fields="title")["title"]
         return "/".join(resolved_folders + [resolved_note])
 
-    def generate_frontmatter(self, ssg_generator, path: str, backlinks: Optional[dict] = None) -> str:
+    def generate_note_body(self, ssg_generator, path: str, backlinks: Optional[dict] = None) -> str:
         """
         Uses the notes endpoint to read the body of a note, but resolves things like:
-        - [ ] frontmatter
+        - [x] frontmatter
         - [x] resource links
         - [ ] note links
         """
         frontmatter_note = self.notes.generate_frontmatter(path)
-        # Download each one if it isn't downloaded and resolve paths
+
         for resource in self.notes.get_note_resources(path):
-            logger.info(f"Handling {resource['title']}")
             resource_file_name = f"{resource['id']}_{resource['title']}"
             resource_path = ssg_generator.get_full_resource_path(resource_file_name)
-            logger.info(f"Checking for {resource_path}")
+
+            # Download the resource to the specified location if it isn't already downloaded
             if not os.path.exists(resource_path):
-                logger.info(f"Need to download {resource_path}")
                 self.resources.download_resource(resource["id"], resource_path)
 
+            # Replace references to that joplin resource with references to the download location
             referral_str = f"![{resource['title']}](:/{resource['id']})"
             relative_resource_path = ssg_generator.get_relative_resource_path(resource_file_name)
             resolved_referral_str = f"![{resource['title']}]({relative_resource_path})"
             frontmatter_note.content = frontmatter_note.content.replace(referral_str, resolved_referral_str)
 
-        return frontmatter_note
+        return frontmatter.dumps(frontmatter_note)
 
     def get_note_references(self, folder: FolderID) -> dict:
         """
@@ -112,11 +124,9 @@ class JoplinWebClipperNotes:
         self.base_url = f"{url}/notes"
         self.token = token
 
-    def get(self, fields: Optional[str] = None) -> list[dict]:
+    def get(self, fields: Optional[str] = None) -> Iterator[dict]:
         url = f"{self.base_url}?token={self.token}"
-        res = requests.get(url)
-
-        return res.json()["items"]
+        yield from JoplinWebClipper.get(url)
 
     def get_note_resources(self, note: NoteID) -> list[dict]:
         *_, note = note.split("/")
@@ -173,11 +183,9 @@ class JoplinWebClipperFolders:
         self.base_url = f"{url}/folders"
         self.token = token
 
-    def get(self, fields: Optional[str] = None):
+    def get(self, fields: Optional[str] = None) -> Iterator[dict]:
         url = f"{self.base_url}?token={self.token}"
-        res = requests.get(url)
-
-        return res.json()["items"]
+        yield from JoplinWebClipper.get(url)
 
     def get_folder(self, folder: FolderID, fields: Optional[str] = None):
         url = f"{self.base_url}/{folder}?token={self.token}"
@@ -204,7 +212,12 @@ class JoplinWebClipperFolders:
         res = requests.get(url)
         return res.json()["items"]
 
-    def find_all_notes(self, folder: FolderID, root: Optional[FolderID] = None) -> list[str]:
+    def resolve(self, folder: FolderID) -> str:
+        if "/" in folder:
+            return "/".join(self.get_folder(f, fields="title")["title"] for f in os.path.split(folder))
+        return self.get_folder(folder, fields="title")["title"]
+
+    def find_all_notes(self, folder: FolderID, root: Optional[FolderID] = None) -> Iterator[str]:
         """
         Takes in a folder ID and finds all full note paths under that folder.
         """
@@ -212,8 +225,9 @@ class JoplinWebClipperFolders:
         notes = [os.path.join(root, note["id"]) for note in self.get_notes(folder)]
 
         for sub_folder in self.get_subfolders(folder):
-            notes.extend(self.find_all_notes(sub_folder["id"], root=root))
-        return notes
+            yield from self.find_all_notes(sub_folder["id"], root=root)
+
+        yield from notes
 
 
 class JoplinWebClipperResources:
@@ -221,11 +235,9 @@ class JoplinWebClipperResources:
         self.base_url = f"{url}/resources"
         self.token = token
 
-    def get(self, fields: Optional[str] = None):
+    def get(self, fields: Optional[str] = None) -> Iterator[dict]:
         url = f"{self.base_url}?token={self.token}"
-        res = requests.get(url)
-
-        return res.json()["items"]
+        yield from JoplinWebClipper.get(url)
 
     def download_resource(self, resource: ResourceID, download_path: str):
         dirname = os.path.dirname(download_path)

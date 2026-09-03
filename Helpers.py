@@ -204,8 +204,8 @@ class JoplinWebClipperFolders:
             last = self.get_folder(last)["parent_id"]
         return "/".join(reversed(output))
 
-    def get_subfolders(self, folder: FolderID) -> list:
-        return [f for f in self.get() if f["parent_id"] == folder]
+    def get_subfolders(self, folder: FolderID) -> Iterator[dict]:
+        yield from (f for f in self.get() if f["parent_id"] == folder)
 
     def get_notes(self, folder: FolderID) -> list:
         url = f"{self.base_url}/{folder}/notes?token={self.token}"
@@ -221,11 +221,11 @@ class JoplinWebClipperFolders:
         """
         Takes in a folder ID and finds all full note paths under that folder.
         """
-        root = os.path.join(root or "", folder)
-        notes = [os.path.join(root, note["id"]) for note in self.get_notes(folder)]
+        notes = [os.path.join(root or "", note["id"]) for note in self.get_notes(folder)]
 
         for sub_folder in self.get_subfolders(folder):
-            yield from self.find_all_notes(sub_folder["id"], root=root)
+            yield from self.find_all_notes(sub_folder["id"],
+                                           root=os.path.join(root or "", sub_folder["id"]))
 
         yield from notes
 
@@ -262,7 +262,7 @@ class HugoGenerator:
     Creates content files in the expected hugo structure.
     """
     def __init__(self, root: str):
-        self.root = os.path.dirname(root)
+        self.root = root
         self.root_resources = os.path.join(root, "static", "images", "shared")
 
     @classmethod
